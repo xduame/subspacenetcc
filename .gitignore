@@ -1,0 +1,46 @@
+# git ignore files
+*.pdf
+Figures/*.pdf
+__pycache__/*.pyc
+plot_style.txt
+plotting
+Figures
+src/__pycache__
+data
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+pyEnv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Data / outputs / model checkpoints
+data/
+dataset/
+datasets/
+outputs/
+results/
+runs/
+*.npy
+*.npz
+*.mat
+*.h5
+*.pt
+*.pth
+*.ckpt
