@@ -51,7 +51,7 @@ Methods:
 import numpy as np
 import scipy
 from scipy.linalg import toeplitz
-from src.models import SubspaceNet
+from src.models import SubspaceNet, SubspaceNetCC
 from src.system_model import SystemModel
 from src.utils import sum_of_diag, find_roots, R2D
 
@@ -157,11 +157,11 @@ class SubspaceMethod(object):
                 Exception: If the given model for covariance calculation is not from SubspaceNet type.
             """
             # Validate model type
-            if not isinstance(model, SubspaceNet):
+            if not isinstance(model, (SubspaceNet, SubspaceNetCC)):
                 raise Exception(
                     (
                         "SubspaceMethod.subspacenet_covariance: given model for covariance\
-                    calculation isn't from SubspaceNet type"
+                    calculation isn't from SubspaceNet/SubspaceNetCC type"
                     )
                 )
             # Predict the covariance matrix using the SubspaceNet model

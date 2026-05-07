@@ -540,7 +540,7 @@ def simulation_summary(
 def get_simulation_filename(
     system_model_params: SystemModelParams, model_config: ModelGenerator
 ):
-    return (
+    base = (
         f"{model_config.model_type}_M={system_model_params.M}_"
         + f"T={system_model_params.T}_SNR_{system_model_params.snr}_"
         + f"tau={model_config.tau}_{system_model_params.signal_type}_"
@@ -549,3 +549,9 @@ def get_simulation_filename(
         + f"bias={system_model_params.bias}_"
         + f"sv_noise={system_model_params.sv_noise_var}"
     )
+    if model_config.model_type.startswith("SubspaceNetCC"):
+        base += (
+            f"_K={model_config.K}_G={model_config.G}_L={model_config.L}"
+            f"_ref={model_config.ref_channel}"
+        )
+    return base

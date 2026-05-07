@@ -35,7 +35,7 @@ from src.criterions import RMSPELoss, MSPELoss
 from src.criterions import RMSPE, MSPE
 from src.methods import MUSIC, RootMUSIC, Esprit, MVDR
 from src.utils import *
-from src.models import SubspaceNet
+from src.models import SubspaceNet, SubspaceNetCC
 from src.plotting import plot_spectrum
 
 
@@ -164,8 +164,10 @@ def evaluate_augmented_model(
     """
     # Initialize parameters for evaluation
     hybrid_loss = []
-    if not isinstance(model, SubspaceNet):
-        raise Exception("evaluate_augmented_model: model is not from type SubspaceNet")
+    if not isinstance(model, (SubspaceNet, SubspaceNetCC)):
+        raise Exception(
+            "evaluate_augmented_model: model is not SubspaceNet or SubspaceNetCC"
+        )
     # Set model to eval mode
     model.eval()
     # Initialize instances of subspace methods
