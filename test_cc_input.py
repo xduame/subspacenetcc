@@ -50,11 +50,16 @@ print("[Output] doa shape:", doa.shape, "  Rz shape:", Rz.shape)
 assert Rz.shape == (1, params.N, params.N), f"Rz 形状错误: {Rz.shape}"
 assert doa.shape == (1, params.M), f"doa 形状错误: {doa.shape}"
 
-# 6. 检查 Rz 是否近似 Hermitian
+# 6. 检查 Rz 是否满足 Hermitian Toeplitz 结构
 Rz_np = Rz.detach().cpu().numpy()[0]
 import numpy as np
 herm_err = np.linalg.norm(Rz_np - Rz_np.conj().T) / np.linalg.norm(Rz_np)
-print(f"[Rz Hermitian 误差] {herm_err:.4e}（< 1 即代表 gram_diagonal_overload 工作正常）")
+print(f"[Rz Hermitian 误差] {herm_err:.4e}（Toeplitz 重构应保持 Hermitian）")
+assert herm_err < 1e-6, "Rz 应为 Hermitian"
+for k in range(1, params.N):
+    diag = np.diag(Rz_np, k=k)
+    assert np.allclose(diag, diag[0]), f"第 {k} 条上对角线不是常数"
+print("Rz Toeplitz 结构验证通过 ✓")
 
 # 7. 高 SNR 下的粗糙正确性
 print(f"[True DOA (deg)]    {sm.doa * 180 / np.pi}")

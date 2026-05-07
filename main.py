@@ -54,19 +54,20 @@ if __name__ == "__main__":
     datasets_path.mkdir(parents=True, exist_ok=True)
     simulations_path.mkdir(parents=True, exist_ok=True)
     saving_path.mkdir(parents=True, exist_ok=True)
+    (saving_path / "final_models").mkdir(parents=True, exist_ok=True)
     # Initialize time and date
     now = datetime.now()
     dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
     dt_string_for_save = now.strftime("%d_%m_%Y_%H_%M")
     # Operations commands
     commands = {
-        "SAVE_TO_FILE": False,  # Saving results to file or present them over CMD
-        "CREATE_DATA": False,  # Creating new dataset
-        "LOAD_DATA": True,  # Loading data from exist dataset
-        "LOAD_MODEL": False,  # Load specific model for training
-        "TRAIN_MODEL": False,  # Applying training operation
-        "SAVE_MODEL": False,  # Saving tuned model
-        "EVALUATE_MODE": True,  # Evaluating desired algorithms
+        "SAVE_TO_FILE": False,
+        "CREATE_DATA": True,        # 训练数据丢了，必须重建
+        "LOAD_DATA": False,
+        "LOAD_MODEL": False,        # 架构变了，旧权重不兼容
+        "TRAIN_MODEL": True,
+        "SAVE_MODEL": True,
+        "EVALUATE_MODE": True,      # 训练完顺带跑评估
     }
     # Saving simulation scores to external file
     if commands["SAVE_TO_FILE"]:
@@ -152,20 +153,36 @@ if __name__ == "__main__":
             )
     # Datasets loading
     elif commands["LOAD_DATA"]:
-        (
-            train_dataset,
-            test_dataset,
-            generic_test_dataset,
-            samples_model,
-        ) = load_datasets(
-            system_model_params=system_model_params,
-            model_type=model_config.model_type,
-            samples_size=samples_size,
-            datasets_path=datasets_path,
-            train_test_ratio=train_test_ratio,
-            is_training=True,
-            **cc_dataset_kwargs,
-        )
+        if commands["TRAIN_MODEL"]:
+            (
+                train_dataset,
+                test_dataset,
+                generic_test_dataset,
+                samples_model,
+            ) = load_datasets(
+                system_model_params=system_model_params,
+                model_type=model_config.model_type,
+                samples_size=samples_size,
+                datasets_path=datasets_path,
+                train_test_ratio=train_test_ratio,
+                is_training=True,
+                **cc_dataset_kwargs,
+            )
+        else:
+            train_dataset = None
+            (
+                test_dataset,
+                generic_test_dataset,
+                samples_model,
+            ) = load_datasets(
+                system_model_params=system_model_params,
+                model_type=model_config.model_type,
+                samples_size=samples_size,
+                datasets_path=datasets_path,
+                train_test_ratio=train_test_ratio,
+                is_training=False,
+                **cc_dataset_kwargs,
+            )
 
     # Training stage
     if commands["TRAIN_MODEL"]:
@@ -173,11 +190,11 @@ if __name__ == "__main__":
         simulation_parameters = (
             TrainingParams()
             .set_batch_size(256)
-            .set_epochs(80)
+            .set_epochs(100)
             .set_model(model=model_config)
-            .set_optimizer(optimizer="Adam", learning_rate=0.00001, weight_decay=1e-9)
+            .set_optimizer(optimizer="Adam", learning_rate=1e-4, weight_decay=1e-7)
             .set_training_dataset(train_dataset)
-            .set_schedular(step_size=80, gamma=0.2)
+            .set_schedular(step_size=25, gamma=0.5)
             .set_criterion()
         )
         if commands["LOAD_MODEL"]:

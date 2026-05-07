@@ -159,10 +159,7 @@ class SubspaceMethod(object):
             # Validate model type
             if not isinstance(model, (SubspaceNet, SubspaceNetCC)):
                 raise Exception(
-                    (
-                        "SubspaceMethod.subspacenet_covariance: given model for covariance\
-                    calculation isn't from SubspaceNet/SubspaceNetCC type"
-                    )
+                    "SubspaceMethod.subspacenet_covariance: given model isn't SubspaceNet/SubspaceNetCC"
                 )
             # Predict the covariance matrix using the SubspaceNet model
             subspacenet_model.eval()
