@@ -421,54 +421,79 @@ class SubspaceNet(nn.Module):
         return doa_prediction, doa_all_predictions, roots, Rz
 
 
+def torch_toeplitz_from_vector(r: torch.Tensor) -> torch.Tensor:
+    """
+    从首列向量构造批次化 Hermitian Toeplitz 矩阵。
+
+    Args:
+        r: 形状 [BS, N] 的复数张量，作为协方差矩阵的第一列
+
+    Returns:
+        R: 形状 [BS, N, N] 的复数 Hermitian Toeplitz 矩阵
+
+    构造规则:
+        R[i, j] = r[i-j]        若 i >= j
+        R[i, j] = conj(r[j-i])  若 i < j
+
+    要求 r[0] 为实数（diagonal entry）；调用方需自己保证。
+    """
+    BS, N = r.shape
+
+    # 构造长度 2N-1 的完整 lag 向量:
+    # full = [conj(r[N-1]), conj(r[N-2]), ..., conj(r[1]), r[0], r[1], ..., r[N-1]]
+    r_conj = torch.conj(r)
+    neg_part = torch.flip(r_conj[:, 1:], dims=[1])  # [BS, N-1]: r(N-1)*, ..., r(1)*
+    full = torch.cat([neg_part, r], dim=1)          # [BS, 2N-1]
+
+    # 构造索引矩阵: index[i, j] = (N-1) + i - j
+    # 即 R[i, j] = full[(N-1) + i - j]
+    idx = torch.arange(N, device=r.device)
+    index_matrix = (N - 1) + idx.unsqueeze(1) - idx.unsqueeze(0)  # [N, N]
+
+    # 高级索引: 对每个 batch，取 full[index_matrix]
+    R = full[:, index_matrix]  # [BS, N, N]
+
+    return R
+
+
 class SubspaceNetCC(nn.Module):
     """
-    Channel cross-correlation 去噪网络，使用确定性 Hermitian Toeplitz 重构。
+    V2: Residual CC vector + deterministic Hermitian Toeplitz reconstruction.
 
-    设计:
-    - 输入 [BS, G, 2K, N] CC 张量（与旧版一致，data_handler 不变）
-    - CNN 特征提取 + bottleneck 降通道
-    - FC 头输出 [BS, 2N]：CC 向量的实虚部
-    - 残差跳连：r = naive_baseline + delta（fc2 初始化为 0，起步即等于经典基线）
-    - 确定性 Hermitian Toeplitz 公式重构 [BS, N, N] 协方差
-    - 后端用与原 SubspaceNet 相同的可微 Root-MUSIC / ESPRIT
+    Input:  CC tensor [BS, G, 2K, N] (real-valued, real/imag split)
+    Output: same 4-tuple as V1 (doa_prediction, doa_all_predictions, roots, Rz)
 
-    参数自由度从旧版 2N²=512 降到 2N=32（N=16 时），
-    且自动满足 Hermitian Toeplitz 结构。
+    Key design:
+    1. Extract baseline CC vector: average zero-lag CC over G segments
+    2. Network produces residual correction Δr (initialized to zero)
+    3. Output CC vector r = baseline + Δr (with r[0] forced real)
+    4. Deterministic Hermitian Toeplitz reconstruction → surrogate covariance Rz
+    5. Differentiable Root-MUSIC on Rz
     """
 
     def __init__(self, G: int, K: int, N: int, M: int, diff_method: str = "root_music"):
         super().__init__()
         self.G, self.K, self.N_expected, self.M = G, K, N, M
 
-        # 卷积特征提取（保留 anti_rectifier 风格）
+        # CNN feature extractor (same kernel pattern as V1, ends with 1x1 bottleneck)
         self.conv1 = nn.Conv2d(G, 16, kernel_size=2)
-        self.conv2 = nn.Conv2d(32, 32, kernel_size=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=2)
+        self.conv2 = nn.Conv2d(32, 32, kernel_size=2)   # 32 = 16*2 (anti_rectifier)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=2)   # 64 = 32*2 (anti_rectifier)
+        self.bottleneck = nn.Conv2d(128, 8, kernel_size=1)  # 128*2 -> 8 channels
 
-        # 1x1 bottleneck：压缩通道，避免 FC 参数爆炸
-        self.bottleneck = nn.Conv2d(128, 8, kernel_size=1)
+        # After conv stack: spatial dims (2K-3, N-3); for K=8 N=16: (13, 13)
+        flatten_dim = 8 * (2 * K - 3) * (N - 3)
 
-        # 3 次 kernel=2 卷积后空间从 (2K, N) 缩到 (2K-3, N-3)
-        feat_h = 2 * K - 3
-        feat_w = N - 3
-        if feat_h <= 0 or feat_w <= 0:
-            raise ValueError(
-                f"SubspaceNetCC: K={K}, N={N} 太小，conv 链路输出非正空间维度"
-            )
-        flatten_size = 8 * feat_h * feat_w
+        self.fc1 = nn.Linear(flatten_dim, 128)
+        self.fc2 = nn.Linear(128, 2 * N)   # 2N = real + imag of residual CC
 
-        self.fc1 = nn.Linear(flatten_size, 128)
-        self.fc2 = nn.Linear(128, 2 * N)  # 输出 [BS, 2N]：实虚部各 N
-
-        self.DropOut = nn.Dropout(0.2)
-        self.ReLU = nn.ReLU()
-
-        # 关键：fc2 初始化为零 → 起步时网络输出 = 0，r = baseline，性能 ≈ 经典 CC+Toeplitz
+        # ★ CRITICAL: Zero-initialize fc2 so initial residual is exactly zero
         nn.init.zeros_(self.fc2.weight)
         nn.init.zeros_(self.fc2.bias)
 
-        # 可微子空间方法
+        self.DropOut = nn.Dropout(0.1)
+        self.ReLU = nn.ReLU()
+
         if diff_method == "root_music":
             self.diff_method = root_music
         elif diff_method == "esprit":
@@ -479,54 +504,47 @@ class SubspaceNetCC(nn.Module):
     def anti_rectifier(self, X):
         return torch.cat((self.ReLU(X), self.ReLU(-X)), 1)
 
-    def _baseline_cc(self, Rx_cc: torch.Tensor) -> torch.Tensor:
-        """
-        从 CC 张量提取 naive baseline：G 段平均的 tau=0 CC 向量。
-
-        Rx_cc 布局: [BS, G, 2K, N]
-            - Rx_cc[:, :, 0, :] = tau=0 实部（所有段）
-            - Rx_cc[:, :, K, :] = tau=0 虚部（所有段）
-        """
-        K = self.K
-        real_tau0 = Rx_cc[:, :, 0, :].mean(dim=1)   # [BS, N]
-        imag_tau0 = Rx_cc[:, :, K, :].mean(dim=1)   # [BS, N]
-        return torch.complex(real_tau0, imag_tau0)
-
     def forward(self, Rx_cc: torch.Tensor):
         # Rx_cc shape: [BS, G, 2K, N]
         BS = Rx_cc.shape[0]
         N = self.N_expected
+        K = self.K
 
-        # 经典 baseline CC（不可学习，等同 segmented_cross_correlation 的输出）
-        r_baseline = self._baseline_cc(Rx_cc)  # [BS, N] complex
+        # ----- Step 1: Extract baseline CC vector (zero-lag, averaged over G segments) -----
+        # Row 0 of (2K, N) is real part of zero-lag CC; row K is imag part.
+        baseline_real = Rx_cc[:, :, 0, :].mean(dim=1)   # [BS, G, N] -> [BS, N]
+        baseline_imag = Rx_cc[:, :, K, :].mean(dim=1)   # [BS, N]
+        baseline_cc = torch.complex(baseline_real, baseline_imag)   # [BS, N]
 
-        # CNN 特征提取
+        # ----- Step 2: Network forward to compute residual -----
         x = self.anti_rectifier(self.conv1(Rx_cc))
         x = self.anti_rectifier(self.conv2(x))
         x = self.anti_rectifier(self.conv3(x))
-        x = self.ReLU(self.bottleneck(x))      # [BS, 8, 2K-3, N-3]
+        x = self.ReLU(self.bottleneck(x))
+        x = x.view(BS, -1)
+        x = self.DropOut(x)
+        x = self.ReLU(self.fc1(x))
+        delta = self.fc2(x)   # [BS, 2N], zero-init so initial output is 0
 
-        # FC 头输出修正量 delta
-        flat = x.view(BS, -1)
-        h = self.ReLU(self.fc1(flat))
-        h = self.DropOut(h)
-        delta = self.fc2(h)                    # [BS, 2N]
-
+        # ----- Step 3: Combine baseline + residual into complex CC vector -----
         delta_real = delta[:, :N]
         delta_imag = delta[:, N:]
-        delta_cc = torch.complex(delta_real, delta_imag)  # [BS, N]
+        delta_cc = torch.complex(delta_real, delta_imag)   # [BS, N]
+        r = baseline_cc + delta_cc
 
-        # 残差：起步时 fc2=0 → r = r_baseline；训练让网络学修正
-        r = r_baseline + delta_cc              # [BS, N]
+        # Force r[0] to be real (Hermitian Toeplitz diagonal entry)
+        r_zero_real = r[:, 0:1].real
+        r_zero_complex = torch.complex(r_zero_real, torch.zeros_like(r_zero_real))
+        r = torch.cat([r_zero_complex, r[:, 1:]], dim=1)   # [BS, N]
 
-        # 确定性 Hermitian Toeplitz 重构
-        Rz = torch_toeplitz_from_vector(r)     # [BS, N, N]
+        # ----- Step 4: Deterministic Hermitian Toeplitz reconstruction -----
+        Rz = torch_toeplitz_from_vector(r)   # [BS, N, N]
 
-        # 微小对角加载，保证数值稳定（防 EVD 反传 linalg error）
-        eps = 1e-3
+        # Diagonal loading for EVD numerical stability
+        eps = 1.0
         Rz = Rz + eps * torch.eye(N, dtype=Rz.dtype, device=Rz.device).unsqueeze(0)
 
-        # 后端可微 Root-MUSIC / ESPRIT
+        # ----- Step 5: Differentiable subspace algorithm -----
         method_output = self.diff_method(Rz, self.M, BS)
         if isinstance(method_output, tuple):
             doa_prediction, doa_all_predictions, roots = method_output
@@ -826,36 +844,6 @@ class DeepCNN(nn.Module):
         X = self.fc4(X)  # [Batch size, grid_size]
         X = self.Sigmoid(X)
         return X
-
-
-def torch_toeplitz_from_vector(r: torch.Tensor) -> torch.Tensor:
-    """
-    从 N 维复向量构造 [BS, N, N] Hermitian Toeplitz 矩阵（可微）。
-
-    参数:
-        r: [BS, N] 复张量，作为 Hermitian Toeplitz 矩阵的第一列
-
-    返回:
-        T: [BS, N, N] 复 Hermitian Toeplitz 矩阵
-            T[b, i, j] = r[b, i-j]      (i >= j)
-            T[b, i, j] = conj(r[b, j-i]) (i < j)
-        自动强制对角元为实数（Hermitian 要求）。
-    """
-    BS, N = r.shape
-    # 强制 r[0] 为实数（Hermitian 对角元必实）
-    r0_real = r[:, 0:1].real.to(r.dtype)
-    r = torch.cat([r0_real, r[:, 1:]], dim=-1)  # [BS, N]
-
-    # 构造长度 2N-1 的序列：[conj(r[N-1]), ..., conj(r[1]), r[0], r[1], ..., r[N-1]]
-    upper = torch.conj(r[:, 1:]).flip(dims=[-1])  # [BS, N-1]
-    sequence = torch.cat([upper, r], dim=-1)       # [BS, 2N-1]
-
-    # 索引矩阵：T[i,j] = sequence[N-1 + i - j]
-    idx = torch.arange(N, device=r.device)
-    index_matrix = (N - 1) + idx.unsqueeze(1) - idx.unsqueeze(0)  # [N, N]
-
-    T = sequence[:, index_matrix]  # [BS, N, N]
-    return T
 
 
 def root_music(Rz: torch.Tensor, M: int, batch_size: int):
