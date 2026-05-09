@@ -62,12 +62,12 @@ if __name__ == "__main__":
     # Operations commands
     commands = {
         "SAVE_TO_FILE": False,
-        "CREATE_DATA": True,        # 训练数据丢了，必须重建
-        "LOAD_DATA": False,
-        "LOAD_MODEL": False,        # 架构变了，旧权重不兼容
+        "CREATE_DATA": True,         # ★ 重新生成相干数据
+        "LOAD_DATA": False,          # ★ 不加载非相干数据
+        "LOAD_MODEL": False,
         "TRAIN_MODEL": True,
         "SAVE_MODEL": True,
-        "EVALUATE_MODE": True,      # 训练完顺带跑评估
+        "EVALUATE_MODE": True,
     }
     # Saving simulation scores to external file
     if commands["SAVE_TO_FILE"]:
@@ -83,7 +83,7 @@ if __name__ == "__main__":
         .set_parameter("T", 200)
         .set_parameter("snr", 10)
         .set_parameter("signal_type", "NarrowBand")
-        .set_parameter("signal_nature", "non-coherent")
+        .set_parameter("signal_nature", "coherent")
         .set_parameter("eta", 0)
         .set_parameter("bias", 0)
         .set_parameter("sv_noise_var", 0)
