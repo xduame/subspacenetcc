@@ -375,7 +375,7 @@ def evaluate_model_based(
                     predictions=predictions_all,
                     true_DOA=doa[0] * R2D,
                     roots=roots,
-                    algorithm="CC-Toeplitz-RMUSIC",
+                    algorithm="CC-Toeplitz-R-MUSIC",
                     figures=figures,
                 )
         else:
