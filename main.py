@@ -43,7 +43,7 @@ plt.close("all")
 if __name__ == "__main__":
     # Initialize paths
     external_data_path = Path.cwd() / "data"
-    scenario_data_path = "uniform_bias_spacing"
+    scenario_data_path = "coherent_no_bias_spacing"
     datasets_path = external_data_path / "datasets" / scenario_data_path
     simulations_path = external_data_path / "simulations"
     saving_path = external_data_path / "weights"
@@ -62,8 +62,8 @@ if __name__ == "__main__":
     # Operations commands
     commands = {
         "SAVE_TO_FILE": False,
-        "CREATE_DATA": True,         # ★ 重新生成相干数据
-        "LOAD_DATA": False,          # ★ 不加载非相干数据
+        "CREATE_DATA": True,         # ★ 重新生成 fine-tune 数据
+        "LOAD_DATA": False,          # ★ 不加载旧数据
         "LOAD_MODEL": False,
         "TRAIN_MODEL": True,
         "SAVE_MODEL": True,
@@ -108,6 +108,8 @@ if __name__ == "__main__":
     # Define samples size
     samples_size = 100000  # Overall dateset size
     train_test_ratio = 0.1  # training and testing datasets ratio
+    learning_rate = 1e-5
+    scheduler_step_size = 30
     # Sets simulation filename
     simulation_filename = get_simulation_filename(
         system_model_params=system_model_params, model_config=model_config
@@ -117,6 +119,19 @@ if __name__ == "__main__":
     print("---------- New Simulation ----------")
     print("------------------------------------")
     print("date and time =", dt_string)
+    print("-------- Experiment Check --------")
+    print(f"scenario_data_path = {scenario_data_path}")
+    print(f"model_type = {model_config.model_type}")
+    print(f"signal_nature = {system_model_params.signal_nature}")
+    print(f"CREATE_DATA = {commands['CREATE_DATA']}")
+    print(f"LOAD_MODEL = {commands['LOAD_MODEL']}")
+    print(f"learning_rate = {learning_rate}")
+    print(f"step_size = {scheduler_step_size}")
+    print(
+        "CC params: G={}, K={}, L={}, ref_channel={}".format(
+            model_config.G, model_config.K, model_config.L, model_config.ref_channel
+        )
+    )
     # Initialize seed
     set_unified_seed()
     # Datasets creation
@@ -190,17 +205,27 @@ if __name__ == "__main__":
         simulation_parameters = (
             TrainingParams()
             .set_batch_size(256)
-            .set_epochs(100)
+            .set_epochs(30)
             .set_model(model=model_config)
-            .set_optimizer(optimizer="Adam", learning_rate=1e-4, weight_decay=1e-7)
+            .set_optimizer(
+                optimizer="Adam", learning_rate=learning_rate, weight_decay=0
+            )
             .set_training_dataset(train_dataset)
-            .set_schedular(step_size=25, gamma=0.5)
+            .set_schedular(step_size=scheduler_step_size, gamma=0.5)
             .set_criterion()
         )
         if commands["LOAD_MODEL"]:
+            best_weights_path = saving_path / "final_models" / simulation_filename
+            if not best_weights_path.exists():
+                raise FileNotFoundError(
+                    f"Epoch 21 best weights not found: {best_weights_path}"
+                )
             simulation_parameters.load_model(
-                loading_path=saving_path / "final_models" / simulation_filename
+                loading_path=best_weights_path
             )
+        for module in simulation_parameters.model.modules():
+            if isinstance(module, torch.nn.Dropout):
+                module.p = 0.0
         # Print training simulation details
         simulation_summary(
             system_model_params=system_model_params,

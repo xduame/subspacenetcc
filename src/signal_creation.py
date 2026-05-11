@@ -122,7 +122,42 @@ class Samples(SystemModel):
         noise = self.noise_creation(noise_mean, noise_variance)
         # Generate Narrowband samples
         if self.params.signal_type.startswith("NarrowBand"):
-            A = np.array([self.steering_vec(theta) for theta in self.doa]).T
+            # 关键修复：一个样本内只生成一次失配实现，所有源共享
+            # 避免每个 steering_vec 调用都重新随机 mis_distance 的非物理行为
+            if (
+                self.params.eta > 0
+                or self.params.bias > 0
+                or self.params.sv_noise_var > 0
+            ):
+                # 预先采样一份失配实现
+                sample_uniform_bias = np.random.uniform(
+                    low=-self.params.bias, high=self.params.bias, size=1
+                )
+                sample_mis_distance = np.random.uniform(
+                    low=-self.params.eta, high=self.params.eta, size=self.params.N
+                )
+                sample_mis_geometry_noise = np.sqrt(self.params.sv_noise_var) * (
+                    np.random.randn(self.params.N)
+                )
+                # 手动构造 A，绕过 steering_vec 内部的随机化
+                A_columns = []
+                for theta in self.doa:
+                    phase = (
+                        -2 * 1j * np.pi * 1.0  # f_sv["NarrowBand"] = 1
+                        * (
+                            sample_uniform_bias
+                            + sample_mis_distance
+                            + self.dist[self.params.signal_type]
+                        )
+                        * self.array
+                        * np.sin(theta)
+                    )
+                    a_theta = np.exp(phase) + sample_mis_geometry_noise
+                    A_columns.append(a_theta)
+                A = np.array(A_columns).T
+            else:
+                # eta=bias=sv_noise=0 时走原路径，不改变行为
+                A = np.array([self.steering_vec(theta) for theta in self.doa]).T
             samples = (A @ signal) + noise
             return samples, signal, A, noise
         # Generate Broadband samples

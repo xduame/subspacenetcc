@@ -407,7 +407,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
                 optimizer.zero_grad(set_to_none=True)
                 continue
             # 梯度裁剪：抑制 EVD 反传时偶发的爆炸梯度
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             # optimizer update
             optimizer.step()
             # add batch loss to overall epoch loss

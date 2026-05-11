@@ -39,6 +39,12 @@ from src.models import SubspaceNet, SubspaceNetCC
 from src.plotting import plot_spectrum
 
 
+def _loss_to_degrees(loss: float, criterion) -> float:
+    if isinstance(criterion, MSPELoss) or criterion is MSPE:
+        return np.sqrt(loss) * R2D
+    return loss * R2D
+
+
 def evaluate_dnn_model(
     model,
     dataset: list,
@@ -480,6 +486,10 @@ def evaluate(
         model_type=model_type,
     )
     print(f"{model_type} Test loss = {model_test_loss}")
+    print(
+        f"{model_type} Test loss (deg) = "
+        f"{_loss_to_degrees(model_test_loss, criterion)}"
+    )
     # Evaluate SubspaceNet augmented methods
     for algorithm in augmented_methods:
         loss = evaluate_augmented_model(
@@ -492,6 +502,11 @@ def evaluate(
             figures=figures,
         )
         print("augmented {} test loss = {}".format(algorithm, loss))
+        print(
+            "augmented {} test loss (deg) = {}".format(
+                algorithm, _loss_to_degrees(loss, subspace_criterion)
+            )
+        )
     # Evaluate classical subspace methods
     for algorithm in subspace_methods:
         loss = evaluate_model_based(
@@ -506,3 +521,8 @@ def evaluate(
             cc_ref_channel=cc_ref_channel,
         )
         print("{} test loss = {}".format(algorithm.lower(), loss))
+        print(
+            "{} test loss (deg) = {}".format(
+                algorithm.lower(), _loss_to_degrees(loss, subspace_criterion)
+            )
+        )

@@ -10,7 +10,11 @@ from src.system_model import SystemModelParams
 from src.signal_creation import Samples
 from src.data_handler import create_channel_cross_correlation_tensor
 from src.models import SubspaceNetCC, torch_toeplitz_from_vector
-from src.methods import CrossCorrToeplitzRootMUSIC
+from src.methods import (
+    CrossCorrToeplitzRootMUSIC,
+    segmented_cross_correlation,
+    toeplitz_reconstruction,
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -43,6 +47,9 @@ params = (SystemModelParams()
 
 model = SubspaceNetCC(G=8, K=8, N=16, M=3, diff_method="root_music")
 model.eval()
+assert model.fc2.out_features == 2 * params.N, "残差头必须只输出 2N 维"
+assert torch.count_nonzero(model.fc2.weight).item() == 0, "fc2 权重必须零初始化"
+assert torch.count_nonzero(model.fc2.bias).item() == 0, "fc2 bias 必须零初始化"
 
 def rmspe_deg(preds, truth):
     truth = np.sort(truth); preds = np.array(preds)
@@ -63,8 +70,21 @@ for trial in range(50):
     # 未训练网络
     X_t = torch.tensor(X_np, dtype=torch.complex64)
     cc = create_channel_cross_correlation_tensor(X_t, K=8, G=8, L=25, ref_channel=0)
+    cc_batch = cc.unsqueeze(0).float()
     with torch.no_grad():
-        doa, _, _, _ = model(cc.unsqueeze(0).float())
+        doa, _, _, Rz = model(cc_batch)
+
+    if trial == 0:
+        r_model = model._baseline_cc(cc_batch)[0].numpy()
+        r_classical = segmented_cross_correlation(X_np, L=25, G=8, ref_channel=0)
+        r_err = np.max(np.abs(r_model - r_classical))
+        assert r_err < 1e-5, f"baseline_r 与经典 CC 不一致: {r_err:.2e}"
+
+        R_expected = toeplitz_reconstruction(r_classical)
+        R_expected += 1e-3 * np.eye(R_expected.shape[0])
+        R_err = np.max(np.abs(Rz[0].numpy() - R_expected))
+        assert R_err < 1e-4, f"Rz 与 Toeplitz baseline 不一致: {R_err:.2e}"
+
     nn_pred = np.sort(doa[0].numpy() * 180 / np.pi)
     if len(nn_pred) >= 3:
         nn_errs.append(rmspe_deg(nn_pred[:3], truth))
@@ -87,8 +107,14 @@ print("✓ 残差初始化生效，起步即达到经典基线水准\n")
 # 3. 参数量对比
 print("=== 3. 参数量统计 ===")
 n_params = sum(p.numel() for p in model.parameters())
+old_v1_params = 173345
+old_free_output_dim = 2 * params.N * params.N
+new_residual_dim = 2 * params.N
 print(f"新 SubspaceNetCC v2: {n_params:,} 参数")
 print(f"  (旧版 K=8 N=16 时 173,345 参数，76% 在 projection FC 黑盒里)")
-print(f"  压缩比: {173345 / n_params:.1f}×")
+print(f"  总参数压缩比: {old_v1_params / n_params:.1f}×")
+print(f"  输出自由度压缩比: {old_free_output_dim / new_residual_dim:.1f}×")
+assert n_params < old_v1_params / 4, "V2 head 应显著小于旧版自由矩阵模型"
+assert old_free_output_dim / new_residual_dim == 16, "输出维度应为 16× 压缩"
 
 print("\n=== 所有检查通过 ✓ ===")
